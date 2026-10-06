@@ -21,7 +21,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "bmp280.h"
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -47,7 +49,13 @@ SPI_HandleTypeDef hspi1;
 UART_HandleTypeDef huart4;
 
 /* USER CODE BEGIN PV */
+bmp280_t bmp_pressure;
+bmp280_t bmp_temp;
 
+#define P_FILTER_N 5
+static float p_hist[P_FILTER_N];
+static uint8_t p_idx = 0;
+static uint8_t p_cnt = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -98,7 +106,13 @@ int main(void)
   MX_SPI1_Init();
   MX_UART4_Init();
   /* USER CODE BEGIN 2 */
+  bmp280_status_t st_p = bmp280_init_i2c(&bmp_pressure, &hi2c1, BMP280_I2C_ADDR_DEFAULT);
+  bmp280_status_t st_t = bmp280_init_spi(&bmp_temp, &hspi1, BMP280_CS_GPIO_Port, BMP280_CS_Pin);
 
+  char msg[96];
+  uint16_t len = sprintf(msg, "BMP280 I2C(P)=%u  BMP280 SPI(T)=%u\r\n",
+                         (unsigned)st_p, (unsigned)st_t);
+  HAL_UART_Transmit(&huart4, (uint8_t *)msg, len, HAL_MAX_DELAY);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -108,6 +122,44 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    float hpa = 0.0f;
+    float deg_c = 0.0f;
+    bmp280_status_t st1 = bmp280_read_pressure(&bmp_pressure, &hpa);
+    bmp280_status_t st2 = bmp280_read_temperature(&bmp_temp, &deg_c);
+
+    if ((st1 == BMP280_OK) && (st2 == BMP280_OK))
+    {
+      p_hist[p_idx] = hpa;
+      p_idx = (uint8_t)((p_idx + 1U) % P_FILTER_N);
+      if (p_cnt < P_FILTER_N)
+      {
+        p_cnt++;
+      }
+      float p_sum = 0.0f;
+      for (uint8_t i = 0; i < p_cnt; i++)
+      {
+        p_sum += p_hist[i];
+      }
+      hpa = p_sum / (float)p_cnt;
+
+      int32_t pc = (int32_t)(hpa * 100.0f + 0.5f);
+      int32_t tc = (int32_t)(deg_c >= 0.0f ? (deg_c * 100.0f + 0.5f)
+                                            : (deg_c * 100.0f - 0.5f));
+      uint32_t tu = (uint32_t)(tc < 0 ? -tc : tc);
+
+      len = sprintf(msg, "P=%ld.%02ld hPa  T=%c%lu.%02lu C\r\n",
+                    (long)(pc / 100), (long)(pc % 100),
+                    (tc < 0) ? '-' : '+',
+                    (unsigned long)(tu / 100), (unsigned long)(tu % 100));
+    }
+    else
+    {
+      len = sprintf(msg, "Sensor error: P=%u T=%u\r\n",
+                    (unsigned)st1, (unsigned)st2);
+    }
+
+    HAL_UART_Transmit(&huart4, (uint8_t *)msg, len, HAL_MAX_DELAY);
+    HAL_Delay(1000);
   }
   /* USER CODE END 3 */
 }
@@ -225,11 +277,11 @@ static void MX_SPI1_Init(void)
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_MASTER;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi1.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -311,7 +363,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  GPIO_InitStruct.Pin = BMP280_CS_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(BMP280_CS_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_WritePin(BMP280_CS_GPIO_Port, BMP280_CS_Pin, GPIO_PIN_SET);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
